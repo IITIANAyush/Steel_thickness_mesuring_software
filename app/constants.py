@@ -1,0 +1,22 @@
+from pathlib import Path
+
+APP_NAME = "Steel Thickness System"
+VERSION = "1.0.0"
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+LOG_DIR = BASE_DIR / "logs"
+CALIBRATION_DIR = BASE_DIR / "calibration"
+
+DEFAULT_SAMPLE_RATE = 100
+DEFAULT_ENCODER_RESOLUTION = 4096
+DEFAULT_FILTER_WINDOW = 5
+
+MAX_SENSOR_COUNT = 8
+MAX_THICKNESS_MM = 200.0
+MIN_THICKNESS_MM = 0.0
+
+HDF5_COMPRESSION = "gzip"
+
+ALARM_HIGH_THRESHOLD = 25.0
+ALARM_LOW_THRESHOLD = 1.0
