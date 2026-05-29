@@ -6,15 +6,13 @@ profiles.  It replays what the real scanCONTROL sensors would stream for a
 steel sheet travelling through the C-frame gate.
 
 Geometry (all values in mm unless noted):
-  - Top sensor above sheet, reading DOWN  → high Z when no sheet, lower Z when
-    sheet surface is present.
-  - Bottom sensor below sheet, reading UP → same convention mirrored.
-  - D_cal = Z_ref_top + Z_ref_bottom  (total C-frame gap, established during
-    mastering on a calibration block of known thickness T_known).
-  - Per-point thickness = D_cal - Z_top(x) - Z_bottom(x)
+  - Both sensors share the same rail reference (Z increases away from rail).
+  - Top sensor reads Z_top (distance from rail to top surface).
+  - Bottom sensor reads Z_bottom (distance from rail to bottom surface).
+  - Per-point thickness = Z_bottom(x) - Z_top(x)
 
 Simulation timeline (encoder positions in mm):
-  0 → pre_len   : empty conveyor  (Z ≈ Z_ref, thickness ≈ 0)
+  0 → pre_len   : empty conveyor  (thickness ≈ 0)
   pre_len → pre_len + sheet_len  : steel sheet present
   pre_len + sheet_len → total    : empty conveyor again
 """
@@ -25,20 +23,18 @@ from scipy.interpolate import interp1d
 from app.sensors.frame import Frame, ProfilePair, MeasurementResult, SheetResult
 from app.sensors.simulation_loader import SimulationLoader
 from app.processing.thickness import ThicknessCalculator
-from app.processing.alignment import align_profiles
 from app.processing.cosine_correction import cosine_correct
 from app.processing.statistics import compute_statistics
 
 
 # ── tuneable simulation parameters ──────────────────────────────────────────
-NOMINAL_THICKNESS_MM  = 10.0        # target steel sheet thickness
-SHEET_LENGTH_MM       = 4000.0       # simulated sheet length
+SHEET_LENGTH_MM       = 4000.0      # simulated sheet length
 PRE_BUFFER_MM         = 50.0        # empty conveyor before sheet
 POST_BUFFER_MM        = 50.0        # empty conveyor after sheet
 ENCODER_STEP_MM       = 2.0         # distance between consecutive slices
 SHEET_NOISE_STD       = 0.030       # ±30 µm Gaussian noise on Z readings
 TILT_ANGLE_RAD        = 0.003       # small sheet tilt for cosine-correction demo
-SHEET_DETECT_Z_DELTA  = 2.0         # Z drop that confirms sheet entry (mm)
+SHEET_DETECT_Z_DELTA  = 0.5         # thickness rise that confirms sheet entry (mm)
 N_POINTS              = 512         # resampled cross-section points
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -55,11 +51,12 @@ class SimulationEngine:
         self.bottom_template = loader.load_csv(bottom_csv, sensor_id=1)
 
         # ── calibration ─────────────────────────────────────────────────────
-        # Treat CSV profiles as sheet-surface measurements.
-        # Reference values = sheet-surface mean + half nominal thickness each side.
-        self._z_ref_top    = float(np.mean(self.top_template.z)    + NOMINAL_THICKNESS_MM / 2)
-        self._z_ref_bottom = float(np.mean(self.bottom_template.z) + NOMINAL_THICKNESS_MM / 2)
-        self.d_calibration = self._z_ref_top + self._z_ref_bottom   # total C-frame gap
+        # Both sensors share the same rail reference.
+        # Thickness = Z_bottom - Z_top.  Reference means come directly from CSV.
+        self._z_ref_top    = float(np.mean(self.top_template.z))
+        self._z_ref_bottom = float(np.mean(self.bottom_template.z))
+        # d_calibration = mean thickness of the reference sheet in the CSVs
+        self.d_calibration = self._z_ref_bottom - self._z_ref_top
 
         self.calc = ThicknessCalculator(d_calibration=self.d_calibration)
 
@@ -78,9 +75,11 @@ class SimulationEngine:
         self._z_top_sheet    = self._top_interp(self.x_common)
         self._z_bottom_sheet = self._bot_interp(self.x_common)
 
-        # Air-gap profile (no sheet): sensors read reference values
-        self._z_top_air    = np.full(N_POINTS, self._z_ref_top)
-        self._z_bottom_air = np.full(N_POINTS, self._z_ref_bottom)
+        # Air-gap profile (no sheet): both sensors read the same reference level
+        # so Z_bottom - Z_top ≈ 0 (empty belt)
+        _air_ref = (self._z_ref_top + self._z_ref_bottom) / 2.0
+        self._z_top_air    = np.full(N_POINTS, _air_ref)
+        self._z_bottom_air = np.full(N_POINTS, _air_ref)
 
         # Timeline
         total_mm = PRE_BUFFER_MM + SHEET_LENGTH_MM + POST_BUFFER_MM
@@ -91,10 +90,10 @@ class SimulationEngine:
         # State
         self._rng = np.random.default_rng(42)
         self.calibration_info = {
-            "z_ref_top_mm":    round(self._z_ref_top,    3),
-            "z_ref_bottom_mm": round(self._z_ref_bottom, 3),
-            "d_calibration_mm": round(self.d_calibration, 3),
-            "nominal_thickness_mm": NOMINAL_THICKNESS_MM,
+            "z_ref_top_mm":        round(self._z_ref_top,    3),
+            "z_ref_bottom_mm":     round(self._z_ref_bottom, 3),
+            "d_calibration_mm":    round(self.d_calibration, 3),
+            "nominal_thickness_mm": round(self.d_calibration, 3),
         }
 
     # ── private helpers ──────────────────────────────────────────────────────
@@ -104,15 +103,15 @@ class SimulationEngine:
         sheet_here = self.sheet_entry <= encoder_pos < self.sheet_exit
 
         if sheet_here:
-            # Slight thickness variation along the sheet (±0.5 mm linear drift + noise)
+            # Slight thickness variation along the sheet (crown shape ±0.5 mm + noise)
             rel = (encoder_pos - self.sheet_entry) / SHEET_LENGTH_MM   # 0→1
-            drift = 0.5 * np.sin(rel * np.pi)                          # crown shape
+            drift = 0.5 * np.sin(rel * np.pi)
             noise_top = self._rng.normal(0, SHEET_NOISE_STD, N_POINTS)
             noise_bot = self._rng.normal(0, SHEET_NOISE_STD, N_POINTS)
             z_top    = self._z_top_sheet    - drift / 2 + noise_top
-            z_bottom = self._z_bottom_sheet - drift / 2 + noise_bot
+            z_bottom = self._z_bottom_sheet + drift / 2 + noise_bot
         else:
-            # Empty conveyor: Z ≈ reference (tiny noise)
+            # Empty conveyor: both sensors at same air reference → thickness ≈ 0
             noise_top = self._rng.normal(0, SHEET_NOISE_STD * 0.5, N_POINTS)
             noise_bot = self._rng.normal(0, SHEET_NOISE_STD * 0.5, N_POINTS)
             z_top    = self._z_top_air    + noise_top
@@ -128,17 +127,13 @@ class SimulationEngine:
         )
 
     def _detect_sheet(self, pair: ProfilePair) -> bool:
-        """Z-threshold sheet detection: both sensors must see a Z drop."""
-        z_top_mean = float(np.mean(pair.z_top))
-        z_bot_mean = float(np.mean(pair.z_bottom))
-        top_drop = self._z_ref_top    - z_top_mean
-        bot_drop = self._z_ref_bottom - z_bot_mean
-        return (top_drop > SHEET_DETECT_Z_DELTA) and (bot_drop > SHEET_DETECT_Z_DELTA)
+        """Sheet detection: mean thickness above threshold."""
+        mean_thickness = float(np.mean(pair.z_bottom - pair.z_top))
+        return mean_thickness > SHEET_DETECT_Z_DELTA
 
     def _process_pair(self, pair: ProfilePair, sheet_present: bool) -> MeasurementResult:
         """Compute thickness from a ProfilePair."""
         thickness_profile = self.calc.compute_profile(pair.z_top, pair.z_bottom)
-        # Cosine correction for warp
         thickness_profile = cosine_correct(thickness_profile, TILT_ANGLE_RAD)
         stats = compute_statistics(thickness_profile)
         return MeasurementResult(
@@ -157,9 +152,8 @@ class SimulationEngine:
 
     def run(self, step_delay_s: float = 0.05):
         """
-        Generator: yields MeasurementResult one slice at a time.
-        At sheet exit also yields a SheetResult summary.
-        Caller controls replay speed via step_delay_s.
+        Generator: yields (MeasurementResult, SheetResult|None) one slice at a time.
+        SheetResult is non-None only on the first slice after sheet exit.
         """
         sheet_measurements = []
         entry_encoder = None
@@ -170,25 +164,21 @@ class SimulationEngine:
             sheet_here  = self._detect_sheet(pair)
             result      = self._process_pair(pair, sheet_here)
 
-            # Sheet entry
             if sheet_here and entry_encoder is None:
                 entry_encoder = enc
                 sheet_measurements = []
 
-            # Accumulate
             if sheet_here:
                 sheet_measurements.append(result)
 
-            # Sheet exit
             if not sheet_here and entry_encoder is not None:
                 if sheet_measurements:
                     all_means = [r.thickness_mean for r in sheet_measurements]
-                    exit_enc  = enc
                     sr = SheetResult(
                         sheet_id=sheet_id,
                         entry_encoder=entry_encoder,
-                        exit_encoder=exit_enc,
-                        length_mm=exit_enc - entry_encoder,
+                        exit_encoder=enc,
+                        length_mm=enc - entry_encoder,
                         thickness_mean=float(np.mean(all_means)),
                         thickness_min=float(np.min([r.thickness_min for r in sheet_measurements])),
                         thickness_max=float(np.max([r.thickness_max for r in sheet_measurements])),
@@ -200,6 +190,7 @@ class SimulationEngine:
                     sheet_id += 1
                 entry_encoder = None
                 sheet_measurements = []
+                continue
 
             yield result, None
 
