@@ -28,7 +28,7 @@ from app.processing.statistics import compute_statistics
 
 
 # ── tuneable simulation parameters ──────────────────────────────────────────
-SHEET_LENGTH_MM       = 4000.0      # simulated sheet length
+SHEET_LENGTH_MM       = 400.0      # simulated sheet length
 PRE_BUFFER_MM         = 50.0        # empty conveyor before sheet
 POST_BUFFER_MM        = 50.0        # empty conveyor after sheet
 ENCODER_STEP_MM       = 2.0         # distance between consecutive slices
@@ -97,25 +97,54 @@ class SimulationEngine:
         }
 
     # ── private helpers ──────────────────────────────────────────────────────
+    ## this one is to generate new csv datapoints
+    
+    # def _make_profile_pair(self, encoder_pos: float, slice_idx: int) -> ProfilePair:
+    #     """Generate a synthetic ProfilePair at the given encoder position."""
+    #     sheet_here = self.sheet_entry <= encoder_pos < self.sheet_exit
 
+    #     if sheet_here:
+    #         # Slight thickness variation along the sheet (crown shape ±0.5 mm + noise)
+    #         rel = (encoder_pos - self.sheet_entry) / SHEET_LENGTH_MM   # 0→1
+    #         drift = 0.5 * np.sin(rel * np.pi)
+    #         noise_top = self._rng.normal(0, SHEET_NOISE_STD, N_POINTS)
+    #         noise_bot = self._rng.normal(0, SHEET_NOISE_STD, N_POINTS)
+    #         z_top    = self._z_top_sheet    - drift / 2 + noise_top
+    #         z_bottom = self._z_bottom_sheet + drift / 2 + noise_bot
+    #     else:
+    #         # Empty conveyor: both sensors at same air reference → thickness ≈ 0
+    #         noise_top = self._rng.normal(0, SHEET_NOISE_STD * 0.5, N_POINTS)
+    #         noise_bot = self._rng.normal(0, SHEET_NOISE_STD * 0.5, N_POINTS)
+    #         z_top    = self._z_top_air    + noise_top
+    #         z_bottom = self._z_bottom_air + noise_bot
+
+    #     return ProfilePair(
+    #         x_common=self.x_common,
+    #         z_top=z_top,
+    #         z_bottom=z_bottom,
+    #         encoder_position=encoder_pos,
+    #         timestamp=time.time(),
+    #         slice_index=slice_idx,
+    #     )
+    
+    ## This one is for simulating just csv data !!!
     def _make_profile_pair(self, encoder_pos: float, slice_idx: int) -> ProfilePair:
-        """Generate a synthetic ProfilePair at the given encoder position."""
+        """
+        Generate a ProfilePair using the original CSV data only.
+        No drift, no crown effect, no noise.
+        """
+
         sheet_here = self.sheet_entry <= encoder_pos < self.sheet_exit
 
         if sheet_here:
-            # Slight thickness variation along the sheet (crown shape ±0.5 mm + noise)
-            rel = (encoder_pos - self.sheet_entry) / SHEET_LENGTH_MM   # 0→1
-            drift = 0.5 * np.sin(rel * np.pi)
-            noise_top = self._rng.normal(0, SHEET_NOISE_STD, N_POINTS)
-            noise_bot = self._rng.normal(0, SHEET_NOISE_STD, N_POINTS)
-            z_top    = self._z_top_sheet    - drift / 2 + noise_top
-            z_bottom = self._z_bottom_sheet + drift / 2 + noise_bot
+            # Directly use CSV profiles
+            z_top = self._z_top_sheet.copy()
+            z_bottom = self._z_bottom_sheet.copy()
+
         else:
-            # Empty conveyor: both sensors at same air reference → thickness ≈ 0
-            noise_top = self._rng.normal(0, SHEET_NOISE_STD * 0.5, N_POINTS)
-            noise_bot = self._rng.normal(0, SHEET_NOISE_STD * 0.5, N_POINTS)
-            z_top    = self._z_top_air    + noise_top
-            z_bottom = self._z_bottom_air + noise_bot
+            # Empty conveyor
+            z_top = self._z_top_air.copy()
+            z_bottom = self._z_bottom_air.copy()
 
         return ProfilePair(
             x_common=self.x_common,
@@ -125,7 +154,6 @@ class SimulationEngine:
             timestamp=time.time(),
             slice_index=slice_idx,
         )
-
     def _detect_sheet(self, pair: ProfilePair) -> bool:
         """Sheet detection: mean thickness above threshold."""
         mean_thickness = float(np.mean(pair.z_bottom - pair.z_top))
