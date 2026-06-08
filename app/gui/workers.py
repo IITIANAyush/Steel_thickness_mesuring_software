@@ -1,11 +1,7 @@
 """
 workers.py — Background QThread workers for the Steel Thickness Monitor.
-
-SimulationWorker  : original flat-sheet worker (backward compatible)
-Simulation3DWorker: new bend-aware worker using BendAwareThicknessCalculator
 """
 from __future__ import annotations
-
 import sys
 from pathlib import Path
 
@@ -18,22 +14,15 @@ from app.sensors.simulation_engine import SimulationEngine, BendMode
 from app.processing.thickness_3d   import BendAwareThicknessCalculator
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Original flat worker — kept for backward compatibility
-# ─────────────────────────────────────────────────────────────────────────────
-
 class SimulationWorker(QObject):
+    """Flat worker — kept for backward compat."""
     calibReady = Signal(dict)
     sliceReady = Signal(dict)
     sheetReady = Signal(dict)
     finished   = Signal()
 
-    def __init__(
-        self,
-        top_csv:    str   = "data/top_profile.csv",
-        bottom_csv: str   = "data/bottom_profile.csv",
-        step_delay: float = 0.05,
-    ):
+    def __init__(self, top_csv="data/top_profile.csv",
+                 bottom_csv="data/bottom_profile.csv", step_delay=0.05):
         super().__init__()
         self.top_csv    = top_csv
         self.bottom_csv = bottom_csv
@@ -45,12 +34,12 @@ class SimulationWorker(QObject):
         try:
             engine = SimulationEngine(top_csv=self.top_csv, bottom_csv=self.bottom_csv)
             self.calibReady.emit(dict(engine.calibration_info))
-
             for result, sheet in engine.run(step_delay_s=self.step_delay):
                 if not self._running:
                     break
                 self.sliceReady.emit({
                     "encoder_mm":     round(result.encoder_position, 2),
+                    # thickness values are in mm — convert to µm for display
                     "thickness_mean": round(result.thickness_mean * 1000, 1),
                     "thickness_min":  round(result.thickness_min  * 1000, 1),
                     "thickness_max":  round(result.thickness_max  * 1000, 1),
@@ -58,11 +47,14 @@ class SimulationWorker(QObject):
                     "sheet_present":  result.sheet_present,
                     "method":         "flat",
                     "bend_corrected": False,
+                    # raw profile for side-view plot (subsample to 64 pts)
+                    "x_profile":  result.thickness_profile[::8].tolist(),
+                    "z_top":      [],
+                    "z_bot":      [],
                 })
                 if sheet is not None:
                     self._emit_sheet(sheet)
         except Exception as exc:
-            print(f"[SimulationWorker] Error: {exc}", flush=True)
             import traceback; traceback.print_exc()
         finally:
             self.finished.emit()
@@ -82,47 +74,41 @@ class SimulationWorker(QObject):
         self._running = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# New 3-D bend-aware worker
-# ─────────────────────────────────────────────────────────────────────────────
-
 class Simulation3DWorker(QObject):
     """
-    Runs SimulationEngine in 3-D mode and pipes every ProfilePair through
-    BendAwareThicknessCalculator.  Exposes identical signals to
-    SimulationWorker so the GUI can swap workers transparently.
+    3-D bend-aware worker.  Uses BendAwareThicknessCalculator (parallel-tangent).
 
-    Extra signal:
-        tangentReady(dict) — per-slice tangent-plane details for 3-D view
+    Signals
+    -------
+    sliceReady(dict)   — per-slice thickness + profile data for all plots
+    profileReady(dict) — full scan geometry for side-view + tangent overlay
+    sheetReady(dict)   — end-of-sheet summary
+    calibReady(dict)   — calibration info
     """
     calibReady   = Signal(dict)
     sliceReady   = Signal(dict)
     sheetReady   = Signal(dict)
-    tangentReady = Signal(dict)   # {encoder_mm, positions_x, thicknesses, normals_z}
+    profileReady = Signal(dict)   # side-view + tangent data
     finished     = Signal()
 
     def __init__(
         self,
-        top_csv:    str   = "data/top_profile.csv",
-        bottom_csv: str   = "data/bottom_profile.csv",
-        step_delay: float = 0.05,
-        # ── simulation bend parameters ──────────────────────────────────
-        bend_mode:         str   = "flat",
-        bend_amplitude_mm: float = 0.0,
-        bend_frequency:    float = 1.0,
-        y_factor:          float = 0.0,
-        add_noise:         bool  = False,
-        noise_std_mm:      float = 0.030,
-        add_crown:         bool  = False,
-        crown_amplitude_mm:float = 0.5,
-        # ── 3-D calculator parameters ───────────────────────────────────
-        n_tangents:         int   = 10,
-        tolerance_mm:       float = 0.5,
-        nominal_mm:         float = 10.0,
-        ransac_iterations:  int   = 50,
-        smoothing_sigma:    float = 1.0,
-        min_inliers_pct:    float = 0.3,
-        neighbour_radius_mm:float = 15.0,
+        top_csv="data/top_profile.csv",
+        bottom_csv="data/bottom_profile.csv",
+        step_delay=0.02,
+        # simulation
+        bend_mode="bend_y",
+        bend_amplitude_mm=3.0,
+        bend_frequency=1.0,
+        y_factor=1.0,
+        add_noise=True,
+        noise_std_mm=0.02,
+        # calculator
+        n_tangents=12,
+        poly_degree=6,
+        max_slope_deg=15.0,
+        smoothing_sigma=1.0,
+        nominal_mm=None,   # auto from calibration
     ):
         super().__init__()
         self.top_csv    = top_csv
@@ -130,129 +116,123 @@ class Simulation3DWorker(QObject):
         self.step_delay = step_delay
         self._running   = False
 
-        # engine params
-        self._eng_kwargs = dict(
-            bend_mode          = bend_mode,
-            bend_amplitude_mm  = bend_amplitude_mm,
-            bend_frequency     = bend_frequency,
-            y_factor           = y_factor,
-            add_noise          = add_noise,
-            noise_std_mm       = noise_std_mm,
-            add_crown          = add_crown,
-            crown_amplitude_mm = crown_amplitude_mm,
+        self._eng_kw = dict(
+            bend_mode=bend_mode,
+            bend_amplitude_mm=bend_amplitude_mm,
+            bend_frequency=bend_frequency,
+            y_factor=y_factor,
+            add_noise=add_noise,
+            noise_std_mm=noise_std_mm,
         )
-        # calculator params
-        self._calc_kwargs = dict(
-            n_tangents          = n_tangents,
-            tolerance_mm        = tolerance_mm,
-            nominal_mm          = nominal_mm,
-            ransac_iterations   = ransac_iterations,
-            smoothing_sigma     = smoothing_sigma,
-            min_inliers_pct     = min_inliers_pct,
-            neighbour_radius_mm = neighbour_radius_mm,
+        self._calc_kw = dict(
+            n_tangents=n_tangents,
+            poly_degree=poly_degree,
+            max_slope_deg=max_slope_deg,
+            smoothing_sigma=smoothing_sigma,
+            nominal_mm=nominal_mm,  # filled after calibration
         )
 
     def run(self):
         self._running = True
         try:
             engine = SimulationEngine(
-                top_csv    = self.top_csv,
-                bottom_csv = self.bottom_csv,
-                **self._eng_kwargs,
+                top_csv=self.top_csv, bottom_csv=self.bottom_csv, **self._eng_kw
             )
-            calc = BendAwareThicknessCalculator(**self._calc_kwargs)
-
             self.calibReady.emit(dict(engine.calibration_info))
+
+            # Auto nominal from calibration if not set
+            nominal = self._calc_kw.get("nominal_mm") or engine.d_calibration
+            calc_kw = {**self._calc_kw, "nominal_mm": nominal}
+            calc = BendAwareThicknessCalculator(**calc_kw)
 
             sheet_measurements = []
             entry_encoder      = None
             sheet_id           = 0
 
-            for pair, flat_result, sheet in engine.run_3d(step_delay_s=self.step_delay):
+            for pair, flat_result, sheet_trigger in engine.run_3d(step_delay_s=self.step_delay):
                 if not self._running:
                     break
 
-                # ── 3-D thickness calculation ────────────────────────────────
                 if flat_result.sheet_present:
-                    y = pair.y_common if pair.y_common is not None else \
-                        __import__('numpy').zeros_like(pair.x_common)
-
                     res3d = calc.compute(
-                        x_top = pair.x_common,
-                        y_top = y,
-                        z_top = pair.z_top,
-                        x_bot = pair.x_common,
-                        y_bot = y,
-                        z_bot = pair.z_bottom,
-                        encoder_position = pair.encoder_position,
-                        timestamp        = pair.timestamp,
-                        slice_index      = pair.slice_index,
+                        x_top=pair.x_common, z_top=pair.z_top,
+                        x_bot=pair.x_common, z_bot=pair.z_bottom,
+                        encoder_position=pair.encoder_position,
+                        timestamp=pair.timestamp,
+                        slice_index=pair.slice_index,
                     )
                     mean_mm = res3d.thickness_mean
                     min_mm  = res3d.thickness_min
                     max_mm  = res3d.thickness_max
                     std_mm  = res3d.thickness_std
-                    method  = "3d_tangent"
-                    bend_ok = True
 
-                    # Emit tangent-plane detail for 3-D visualisation panel
-                    if res3d.measurements:
-                        self.tangentReady.emit({
-                            "encoder_mm":   round(pair.encoder_position, 2),
-                            "positions_x":  [m.position_xyz[0] for m in res3d.measurements],
-                            "thicknesses":  [round(m.thickness_mm * 1000, 1) for m in res3d.measurements],
-                            "normals_z":    [round(float(m.normal_vector[2]), 4) for m in res3d.measurements],
-                            "inliers":      [m.inlier_count for m in res3d.measurements],
-                        })
+                    # Emit full profile geometry for plots
+                    tang_x  = [m.x_pos       for m in res3d.measurements]
+                    tang_zt = [m.z_top        for m in res3d.measurements]
+                    tang_zb = [m.z_bot        for m in res3d.measurements]
+                    tang_t  = [m.thickness_mm for m in res3d.measurements]
+                    tang_nx = [m.normal[0]    for m in res3d.measurements]
+                    tang_nz = [m.normal[1]    for m in res3d.measurements]
+
+                    self.profileReady.emit({
+                        "encoder_mm":  round(pair.encoder_position, 2),
+                        # raw scan data (subsample for speed)
+                        "x_top_raw":   pair.x_common[::4].tolist(),
+                        "z_top_raw":   pair.z_top[::4].tolist(),
+                        "x_bot_raw":   pair.x_common[::4].tolist(),
+                        "z_bot_raw":   pair.z_bottom[::4].tolist(),
+                        # polynomial fit
+                        "x_fit":       res3d.x_fit[::4].tolist(),
+                        "z_top_fit":   res3d.z_top_fit[::4].tolist(),
+                        "z_bot_fit":   res3d.z_bot_fit[::4].tolist(),
+                        # tangent measurements
+                        "tang_x":  tang_x,
+                        "tang_zt": tang_zt,
+                        "tang_zb": tang_zb,
+                        "tang_t":  tang_t,
+                        "tang_nx": tang_nx,
+                        "tang_nz": tang_nz,
+                    })
                 else:
-                    # No sheet — use flat result (near zero)
                     mean_mm = flat_result.thickness_mean
                     min_mm  = flat_result.thickness_min
                     max_mm  = flat_result.thickness_max
                     std_mm  = flat_result.thickness_std
-                    method  = "flat"
-                    bend_ok = False
 
                 self.sliceReady.emit({
                     "encoder_mm":     round(pair.encoder_position, 2),
-                    "thickness_mean": round(mean_mm * 1000, 1),
+                    "thickness_mean": round(mean_mm * 1000, 1),   # → µm
                     "thickness_min":  round(min_mm  * 1000, 1),
                     "thickness_max":  round(max_mm  * 1000, 1),
                     "thickness_std":  round(std_mm  * 1000, 1),
                     "sheet_present":  flat_result.sheet_present,
-                    "method":         method,
-                    "bend_corrected": bend_ok,
+                    "method":         "3d_tangent" if flat_result.sheet_present else "flat",
+                    "bend_corrected": flat_result.sheet_present,
                 })
 
-                # ── sheet accumulation for SheetResult ──────────────────────
                 if flat_result.sheet_present and entry_encoder is None:
                     entry_encoder = pair.encoder_position
                     sheet_measurements = []
-
                 if flat_result.sheet_present:
-                    sheet_measurements.append({
-                        "mean": mean_mm, "min": min_mm, "max": max_mm
-                    })
+                    sheet_measurements.append(mean_mm)
 
-                if sheet is not None:
+                if sheet_trigger is not None:
                     if sheet_measurements:
                         import numpy as _np
-                        means = [s["mean"] for s in sheet_measurements]
                         self.sheetReady.emit({
                             "sheet_id":  sheet_id,
-                            "length_mm": round(sheet.length_mm, 1),
-                            "mean_um":   round(float(_np.mean(means)) * 1000, 1),
-                            "min_um":    round(float(_np.min([s["min"] for s in sheet_measurements])) * 1000, 1),
-                            "max_um":    round(float(_np.max([s["max"] for s in sheet_measurements])) * 1000, 1),
-                            "std_um":    round(float(_np.std(means)) * 1000, 1),
+                            "length_mm": round(sheet_trigger.length_mm, 1),
+                            "mean_um":   round(float(_np.mean(sheet_measurements)) * 1000, 1),
+                            "min_um":    round(float(_np.min(sheet_measurements))  * 1000, 1),
+                            "max_um":    round(float(_np.max(sheet_measurements))  * 1000, 1),
+                            "std_um":    round(float(_np.std(sheet_measurements))  * 1000, 1),
                             "n_slices":  len(sheet_measurements),
                         })
                         sheet_id += 1
-                    entry_encoder = None
+                    entry_encoder      = None
                     sheet_measurements = []
 
-        except Exception as exc:
-            print(f"[Simulation3DWorker] Error: {exc}", flush=True)
+        except Exception:
             import traceback; traceback.print_exc()
         finally:
             self.finished.emit()
