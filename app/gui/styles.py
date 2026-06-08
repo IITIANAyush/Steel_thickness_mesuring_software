@@ -19,7 +19,14 @@ PALETTE = {
     "warn_bg":   "#FFFBEB",
     "fail":      "#DC2626",
     "fail_bg":   "#FEF2F2",
+    "info":      "#7C3AED",
+    "info_bg":   "#F5F3FF",
 }
+
+ALARM_OK   = f"background-color: {PALETTE['ok_bg']};   color: {PALETTE['ok']};"
+ALARM_WARN = f"background-color: {PALETTE['warn_bg']}; color: {PALETTE['warn']};"
+ALARM_FAIL = f"background-color: {PALETTE['fail_bg']}; color: {PALETTE['fail']};"
+ALARM_INFO = f"background-color: {PALETTE['info_bg']}; color: {PALETTE['info']};"
 
 STYLE_SHEET = f"""
 /* ═══════════════════════════════════════════════
@@ -64,13 +71,12 @@ QToolBar QLabel#appSubtitle {{
 ═══════════════════════════════════════════════ */
 QPushButton {{
     background-color: {PALETTE['surface']};
-    color: {PALETTE['text']};
     border: 1px solid {PALETTE['border_2']};
-    border-radius: 5px;
-    padding: 7px 16px;
-    font-size: 12px;
-    font-weight: 500;
-    min-width: 76px;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-weight: 600;
+    color: {PALETTE['text']};
+    min-width: 80px;
 }}
 
 QPushButton:hover {{
@@ -80,51 +86,43 @@ QPushButton:hover {{
 }}
 
 QPushButton:pressed {{
-    background-color: #D8E8F9;
+    background-color: {PALETTE['accent']};
+    color: #ffffff;
 }}
 
 QPushButton:disabled {{
-    color: #ABABAB;
+    color: {PALETTE['muted']};
     border-color: {PALETTE['border']};
-    background-color: #F5F5F5;
+    background-color: {PALETTE['bg']};
 }}
 
 QPushButton#btnStart {{
     background-color: {PALETTE['accent']};
-    color: #FFFFFF;
-    border-color: {PALETTE['accent']};
-    font-weight: 600;
+    color: #ffffff;
+    border: none;
 }}
+
 QPushButton#btnStart:hover {{
     background-color: {PALETTE['accent_h']};
-    border-color: {PALETTE['accent_h']};
-    color: #FFFFFF;
+    color: #ffffff;
 }}
+
 QPushButton#btnStart:disabled {{
-    background-color: #A0BAE0;
-    border-color: #A0BAE0;
-    color: #FFFFFF;
+    background-color: {PALETTE['border_2']};
+    color: {PALETTE['muted']};
 }}
 
 QPushButton#btnStop {{
-    background-color: {PALETTE['fail']};
-    color: #FFFFFF;
+    color: {PALETTE['fail']};
     border-color: {PALETTE['fail']};
-    font-weight: 600;
 }}
+
 QPushButton#btnStop:hover {{
-    background-color: #B91C1C;
-    border-color: #B91C1C;
-    color: #FFFFFF;
-}}
-QPushButton#btnStop:disabled {{
-    background-color: #F0AAAA;
-    border-color: #F0AAAA;
-    color: #FFFFFF;
+    background-color: {PALETTE['fail_bg']};
 }}
 
 /* ═══════════════════════════════════════════════
-   CARDS (QFrame)
+   METRIC CARDS
 ═══════════════════════════════════════════════ */
 QFrame#metricCard {{
     background-color: {PALETTE['surface']};
@@ -132,107 +130,201 @@ QFrame#metricCard {{
     border-radius: 8px;
 }}
 
+QLabel#cardLabel {{
+    font-size: 10px;
+    font-weight: 700;
+    color: {PALETTE['muted']};
+    letter-spacing: 0.8px;
+}}
+
+QLabel#cardUnit {{
+    font-size: 12px;
+    color: {PALETTE['muted']};
+    margin-bottom: 4px;
+}}
+
+QLabel#cardSub {{
+    font-size: 11px;
+    color: {PALETTE['muted']};
+}}
+
 /* ═══════════════════════════════════════════════
    GROUP BOXES
 ═══════════════════════════════════════════════ */
 QGroupBox {{
-    background-color: {PALETTE['surface']};
+    font-weight: 700;
+    font-size: 11px;
+    color: {PALETTE['muted']};
+    letter-spacing: 0.5px;
     border: 1px solid {PALETTE['border']};
     border-radius: 8px;
-    margin-top: 18px;
-    padding: 10px 12px 10px 12px;
+    margin-top: 12px;
+    padding-top: 8px;
+    background-color: {PALETTE['surface']};
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 10px;
-    top: 0px;
-    padding: 0px 6px;
+    top: -1px;
     background-color: {PALETTE['surface']};
-    color: {PALETTE['muted']};
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
+    padding: 0 4px;
 }}
 
 /* ═══════════════════════════════════════════════
-   LOG TABLE
+   SPIN BOXES, COMBO BOXES, LINE EDITS
+═══════════════════════════════════════════════ */
+QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit {{
+    background-color: {PALETTE['surface']};
+    border: 1px solid {PALETTE['border_2']};
+    border-radius: 5px;
+    padding: 4px 8px;
+    min-height: 26px;
+    color: {PALETTE['text']};
+}}
+
+QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QLineEdit:focus {{
+    border-color: {PALETTE['accent']};
+}}
+
+QDoubleSpinBox::up-button, QSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
+    border-left: 1px solid {PALETTE['border']};
+    border-bottom: 1px solid {PALETTE['border']};
+    border-top-right-radius: 5px;
+}}
+
+QDoubleSpinBox::down-button, QSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border-left: 1px solid {PALETTE['border']};
+    border-bottom-right-radius: 5px;
+}}
+
+QComboBox::drop-down {{
+    border: none;
+    width: 24px;
+}}
+
+QComboBox QAbstractItemView {{
+    background-color: {PALETTE['surface']};
+    border: 1px solid {PALETTE['border_2']};
+    selection-background-color: {PALETTE['accent_l']};
+    selection-color: {PALETTE['accent']};
+}}
+
+/* ═══════════════════════════════════════════════
+   CHECKBOXES
+═══════════════════════════════════════════════ */
+QCheckBox {{
+    spacing: 6px;
+    color: {PALETTE['text']};
+}}
+
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {PALETTE['border_2']};
+    border-radius: 4px;
+    background-color: {PALETTE['surface']};
+}}
+
+QCheckBox::indicator:checked {{
+    background-color: {PALETTE['accent']};
+    border-color: {PALETTE['accent']};
+}}
+
+/* ═══════════════════════════════════════════════
+   LABELS — info panel
+═══════════════════════════════════════════════ */
+QLabel#infoKey {{
+    font-size: 11px;
+    color: {PALETTE['muted']};
+}}
+
+QLabel#infoVal {{
+    font-size: 11px;
+    font-weight: 600;
+    color: {PALETTE['text']};
+    font-family: "Consolas", monospace;
+}}
+
+QLabel#sectionHeader {{
+    font-size: 10px;
+    font-weight: 700;
+    color: {PALETTE['muted']};
+    letter-spacing: 0.8px;
+    padding: 4px 0 2px 0;
+}}
+
+/* ═══════════════════════════════════════════════
+   TABLE
 ═══════════════════════════════════════════════ */
 QTableWidget {{
     background-color: {PALETTE['surface']};
     border: 1px solid {PALETTE['border']};
-    border-radius: 8px;
-    gridline-color: #F3F4F6;
-    selection-background-color: {PALETTE['accent_l']};
-    selection-color: {PALETTE['text']};
-    outline: 0;
+    border-radius: 6px;
+    gridline-color: {PALETTE['border']};
+    font-size: 11px;
+    font-family: "Consolas", monospace;
 }}
 
 QTableWidget::item {{
-    padding: 5px 10px;
-    font-size: 12px;
-    font-family: "Consolas", "Courier New", monospace;
-    border: none;
-}}
-
-QTableWidget::item:selected {{
-    background-color: {PALETTE['accent_l']};
-    color: {PALETTE['text']};
-}}
-
-QHeaderView {{
-    background-color: transparent;
+    padding: 2px 6px;
 }}
 
 QHeaderView::section {{
-    background-color: #F8F9FB;
-    color: {PALETTE['muted']};
-    font-family: "Segoe UI", Arial, sans-serif;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    padding: 7px 10px;
+    background-color: {PALETTE['bg']};
     border: none;
     border-bottom: 1px solid {PALETTE['border']};
-    border-right: 1px solid #F0F2F5;
-}}
-
-QHeaderView::section:first {{
-    border-top-left-radius: 7px;
+    border-right: 1px solid {PALETTE['border']};
+    font-size: 10px;
+    font-weight: 700;
+    color: {PALETTE['muted']};
+    letter-spacing: 0.5px;
+    padding: 4px 6px;
 }}
 
 /* ═══════════════════════════════════════════════
-   SCROLLBARS
+   PROGRESS BAR
 ═══════════════════════════════════════════════ */
+QProgressBar {{
+    border: none;
+    border-radius: 3px;
+    background-color: {PALETTE['bg']};
+}}
+
+QProgressBar::chunk {{
+    background-color: {PALETTE['accent']};
+    border-radius: 3px;
+}}
+
+/* ═══════════════════════════════════════════════
+   SCROLL AREA / SCROLL BAR
+═══════════════════════════════════════════════ */
+QScrollArea {{
+    border: none;
+    background: transparent;
+}}
+
 QScrollBar:vertical {{
     background: transparent;
     width: 6px;
     margin: 0;
 }}
+
 QScrollBar::handle:vertical {{
-    background: #D1D5DB;
+    background: {PALETTE['border_2']};
     border-radius: 3px;
-    min-height: 24px;
+    min-height: 20px;
 }}
-QScrollBar::handle:vertical:hover {{
-    background: #9CA3AF;
-}}
+
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
-}}
-QScrollBar:horizontal {{
-    background: transparent;
-    height: 6px;
-}}
-QScrollBar::handle:horizontal {{
-    background: #D1D5DB;
-    border-radius: 3px;
-}}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-    width: 0;
 }}
 
 /* ═══════════════════════════════════════════════
@@ -240,9 +332,6 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 ═══════════════════════════════════════════════ */
 QSplitter::handle {{
     background-color: {PALETTE['border']};
-}}
-QSplitter::handle:horizontal {{
-    width: 1px;
 }}
 
 /* ═══════════════════════════════════════════════
@@ -253,77 +342,39 @@ QStatusBar {{
     border-top: 1px solid {PALETTE['border']};
     font-size: 11px;
     color: {PALETTE['muted']};
-    padding: 2px 8px;
 }}
 
 /* ═══════════════════════════════════════════════
-   PROGRESS BAR
+   TOOLTIPS
 ═══════════════════════════════════════════════ */
-QProgressBar {{
-    background-color: #EEF0F5;
+QToolTip {{
+    background-color: {PALETTE['text']};
+    color: #ffffff;
     border: none;
     border-radius: 4px;
-    height: 6px;
-    text-align: center;
-    font-size: 10px;
-}}
-QProgressBar::chunk {{
-    background-color: {PALETTE['accent']};
-    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
 }}
 
 /* ═══════════════════════════════════════════════
-   LABELS (named)
+   BADGE LABELS (method / bend indicator)
 ═══════════════════════════════════════════════ */
-QLabel#cardLabel {{
+QLabel#badge3d {{
+    background-color: {PALETTE['info_bg']};
+    color: {PALETTE['info']};
+    border-radius: 10px;
+    padding: 2px 10px;
     font-size: 10px;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
+}}
+
+QLabel#badgeFlat {{
+    background-color: {PALETTE['bg']};
     color: {PALETTE['muted']};
-}}
-
-QLabel#cardValue {{
-    font-size: 36px;
-    font-weight: 700;
-    font-family: "Consolas", "Segoe UI", monospace;
-    letter-spacing: -1px;
-}}
-
-QLabel#cardUnit {{
-    font-size: 13px;
-    color: {PALETTE['muted']};
-    padding-bottom: 4px;
-}}
-
-QLabel#cardSub {{
-    font-size: 11px;
-    color: {PALETTE['muted']};
-}}
-
-QLabel#infoKey {{
-    font-size: 11px;
-    color: {PALETTE['muted']};
-}}
-
-QLabel#infoVal {{
-    font-size: 12px;
-    font-weight: 600;
-    font-family: "Consolas", monospace;
-    color: {PALETTE['text']};
-}}
-
-QLabel#sectionHeader {{
+    border-radius: 10px;
+    padding: 2px 10px;
     font-size: 10px;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: {PALETTE['muted']};
-    padding: 4px 0px 2px 0px;
+    border: 1px solid {PALETTE['border']};
 }}
 """
-
-# Alarm-specific styles (applied dynamically)
-ALARM_OK   = f"color: {PALETTE['ok']}; background: {PALETTE['ok_bg']};"
-ALARM_WARN = f"color: {PALETTE['warn']}; background: {PALETTE['warn_bg']};"
-ALARM_FAIL = f"color: {PALETTE['fail']}; background: {PALETTE['fail_bg']};"
