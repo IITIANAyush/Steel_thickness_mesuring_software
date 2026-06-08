@@ -1,0 +1,213 @@
+"""
+thickness_3d.py — Parallel-Tangent Bend-Aware Thickness Measurement
+=====================================================================
+Fits a polynomial to the top and bottom scan profiles, then at each
+tangent point computes the perpendicular distance between the two surfaces
+using the principle of parallel tangents.
+
+Key classes
+-----------
+TangentMeasurement           : result for a single tangent location
+ThicknessResult3D            : aggregated result for one encoder slice
+BendAwareThicknessCalculator : main entry point
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import List, Tuple
+
+import numpy as np
+from scipy.ndimage import gaussian_filter1d
+
+
+@dataclass
+class TangentMeasurement:
+    """Per-tangent thickness measurement."""
+    x_pos:         float          # X position along cross-section (mm)
+    z_top:         float          # fitted top surface Z at this x
+    z_bot:         float          # fitted bottom surface Z at this x
+    slope_top:     float          # dZ/dX of top surface (tangent slope)
+    slope_bot:     float          # dZ/dX of bottom surface
+    thickness_mm:  float          # perpendicular thickness
+    normal:        Tuple[float, float]  # unit normal to top surface (nx, nz)
+
+
+@dataclass
+class ThicknessResult3D:
+    """Aggregated result for one encoder slice."""
+    encoder_position: float
+    timestamp:        float
+    slice_index:      int
+    x_top_raw:        np.ndarray   # raw top scan points X
+    z_top_raw:        np.ndarray   # raw top scan points Z
+    x_bot_raw:        np.ndarray   # raw bottom scan points X
+    z_bot_raw:        np.ndarray   # raw bottom scan points Z
+    x_fit:            np.ndarray   # dense X for polynomial curves
+    z_top_fit:        np.ndarray   # fitted top surface
+    z_bot_fit:        np.ndarray   # fitted bottom surface
+    measurements:     List[TangentMeasurement] = field(default_factory=list)
+    thickness_mean:   float = 0.0
+    thickness_min:    float = 0.0
+    thickness_max:    float = 0.0
+    thickness_std:    float = 0.0
+    poly_degree:      int   = 6
+    method:           str   = "parallel_tangent"
+
+
+class BendAwareThicknessCalculator:
+    """
+    Computes bend-corrected thickness using the parallel-tangent principle.
+
+    Algorithm
+    ---------
+    1. Fit a polynomial of degree `poly_degree` to both top and bottom scans
+    2. At `n_tangents` evenly spaced X positions, compute the surface normal
+       from the top polynomial derivative
+    3. Cast a ray along that normal from the top surface and find the
+       intersection with the bottom polynomial → perpendicular thickness
+    4. Accept only tangents whose slope is within `max_slope_deg` of horizontal
+
+    Parameters
+    ----------
+    n_tangents     : number of measurement positions across the width
+    poly_degree    : degree of polynomial fitted to each surface
+    max_slope_deg  : max accepted surface slope (degrees); steeper tangents
+                     are excluded (they indicate edge artifacts)
+    smoothing_sigma: Gaussian σ for smoothing the final thickness profile
+    nominal_mm     : expected thickness for outlier rejection (mm)
+    """
+
+    def __init__(
+        self,
+        n_tangents:     int   = 12,
+        poly_degree:    int   = 6,
+        max_slope_deg:  float = 15.0,
+        smoothing_sigma:float = 1.0,
+        nominal_mm:     float = 10.0,
+    ):
+        self.n_tangents      = n_tangents
+        self.poly_degree     = poly_degree
+        self.max_slope_deg   = max_slope_deg
+        self.smoothing_sigma = smoothing_sigma
+        self.nominal_mm      = nominal_mm
+
+    def compute(
+        self,
+        x_top: np.ndarray,
+        z_top: np.ndarray,
+        x_bot: np.ndarray,
+        z_bot: np.ndarray,
+        encoder_position: float = 0.0,
+        timestamp:        float = 0.0,
+        slice_index:      int   = 0,
+    ) -> ThicknessResult3D:
+
+        # Overlap region only
+        x_min = max(x_top.min(), x_bot.min())
+        x_max = min(x_top.max(), x_bot.max())
+        x_fit = np.linspace(x_min, x_max, 500)
+
+        # Fit polynomials
+        deg = min(self.poly_degree, len(x_top) - 1, len(x_bot) - 1)
+        p_top = np.polyfit(x_top, z_top, deg)
+        p_bot = np.polyfit(x_bot, z_bot, deg)
+        dp_top = np.polyder(p_top)   # derivative → slope
+
+        z_top_fit = np.polyval(p_top, x_fit)
+        z_bot_fit = np.polyval(p_bot, x_fit)
+
+        # Tangent positions
+        x_tangents = np.linspace(x_min, x_max, self.n_tangents)
+        max_slope  = np.tan(np.deg2rad(self.max_slope_deg))
+        measurements: List[TangentMeasurement] = []
+
+        for xc in x_tangents:
+            slope = float(np.polyval(dp_top, xc))
+            if abs(slope) > max_slope:
+                continue   # too steep — edge artifact
+
+            # Surface normal to top at xc (2D: in X-Z plane)
+            # tangent direction: (1, slope), normal: (-slope, 1) normalised
+            norm_len = np.sqrt(slope**2 + 1.0)
+            nx = -slope / norm_len
+            nz =  1.0   / norm_len
+
+            zt = float(np.polyval(p_top, xc))
+
+            # Ray-march along normal to find bottom surface intersection
+            # Bottom surface: z_bot(x) = polyval(p_bot, x)
+            # We want: zt + t*nz = polyval(p_bot, xt + t*nx)
+            # Solve numerically with a fine sample
+            t_max = self.nominal_mm * 3.0
+            t_arr = np.linspace(0.0, t_max, 2000)
+            x_ray = xc   + t_arr * nx
+            z_ray = zt   + t_arr * nz
+            z_bot_at_ray = np.polyval(p_bot, x_ray)
+            diff = z_ray - z_bot_at_ray
+
+            # Find sign change (ray crosses bottom surface)
+            sign_changes = np.where(np.diff(np.sign(diff)))[0]
+            if len(sign_changes) == 0:
+                continue
+            i0 = sign_changes[0]
+            # Linear interpolate for sub-sample accuracy
+            t0, t1 = t_arr[i0], t_arr[i0 + 1]
+            d0, d1 = diff[i0], diff[i0 + 1]
+            t_cross = t0 - d0 * (t1 - t0) / (d1 - d0)
+            thickness = abs(t_cross)
+
+            # Reject outliers vs nominal
+            if not (0.3 * self.nominal_mm < thickness < 2.5 * self.nominal_mm):
+                continue
+
+            zb = float(np.polyval(p_bot, xc))
+            measurements.append(TangentMeasurement(
+                x_pos=xc,
+                z_top=zt,
+                z_bot=zb,
+                slope_top=slope,
+                slope_bot=float(np.polyval(np.polyder(p_bot), xc)),
+                thickness_mm=thickness,
+                normal=(nx, nz),
+            ))
+
+        return self._aggregate(
+            measurements, x_top, z_top, x_bot, z_bot,
+            x_fit, z_top_fit, z_bot_fit,
+            encoder_position, timestamp, slice_index, deg,
+        )
+
+    def _aggregate(
+        self,
+        measurements, x_top_raw, z_top_raw, x_bot_raw, z_bot_raw,
+        x_fit, z_top_fit, z_bot_fit,
+        encoder_position, timestamp, slice_index, deg,
+    ) -> ThicknessResult3D:
+
+        result = ThicknessResult3D(
+            encoder_position=encoder_position,
+            timestamp=timestamp,
+            slice_index=slice_index,
+            x_top_raw=x_top_raw,
+            z_top_raw=z_top_raw,
+            x_bot_raw=x_bot_raw,
+            z_bot_raw=z_bot_raw,
+            x_fit=x_fit,
+            z_top_fit=z_top_fit,
+            z_bot_fit=z_bot_fit,
+            measurements=measurements,
+            poly_degree=deg,
+        )
+
+        if not measurements:
+            return result
+
+        vals = np.array([m.thickness_mm for m in measurements])
+        if self.smoothing_sigma > 0 and len(vals) > 3:
+            vals = gaussian_filter1d(vals, sigma=self.smoothing_sigma)
+
+        result.thickness_mean = float(np.mean(vals))
+        result.thickness_min  = float(np.min(vals))
+        result.thickness_max  = float(np.max(vals))
+        result.thickness_std  = float(np.std(vals))
+        return result
